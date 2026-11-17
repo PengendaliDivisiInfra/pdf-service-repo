@@ -11,24 +11,39 @@ app.get('/healthz', (req, res) => {
 });
 
 app.post('/generate-pdf', async (req, res) => {
-  // Tangkap parameter dinamis dari Vercel
   const { html, scale, format = 'A3', isLandscape = true } = req.body;
   let browser = null;
 
   try {
     browser = await puppeteer.launch({
       headless: "new",
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+      protocolTimeout: 180000, // Beri waktu 3 menit untuk protokol internal
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--font-render-hinting=none'
+      ]
     });
 
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 60000 });
     
-    await new Promise(r => setTimeout(r, 1000));
+    // 1. Tunggu sampai semua aset (CSS, Font, Gambar) benar-benar termuat
+    await page.setContent(html, { 
+      waitUntil: ['networkidle0', 'domcontentloaded'], 
+      timeout: 120000 
+    });
+    
+    // 2. Pastikan font sudah siap
+    await page.evaluateHandle('document.fonts.ready');
+    
+    // 3. Buffer ekstra untuk layouting tabel raksasa
+    await new Promise(r => setTimeout(r, 2000));
 
     const pdfBuffer = await page.pdf({
-      format: format,          // Gunakan variabel dinamis
-      landscape: isLandscape,  // Gunakan variabel dinamis
+      format: format,
+      landscape: isLandscape,
       printBackground: true,
       scale: scale || 1,
       margin: { top: '10mm', right: '10mm', bottom: '15mm', left: '10mm' },
@@ -38,7 +53,8 @@ app.post('/generate-pdf', async (req, res) => {
         <div style="width: 100%; font-size: 9px; font-family: 'Segoe UI', Arial, sans-serif; color: #64748b; text-align: right; padding-right: 10mm;">
           Page <span class="pageNumber"></span> of <span class="totalPages"></span>
         </div>
-      `
+      `,
+      timeout: 120000
     });
 
     res.set({
@@ -48,7 +64,8 @@ app.post('/generate-pdf', async (req, res) => {
     res.send(pdfBuffer);
 
   } catch (error) {
-    console.error('Error:', error);
+    console.error('=== PDF ERROR ===');
+    console.error(error); // Log detail error ke Railway
     res.status(500).json({ error: error.message });
   } finally {
     if (browser) await browser.close();

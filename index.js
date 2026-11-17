@@ -14,32 +14,40 @@ app.post('/generate-pdf', async (req, res) => {
   const { html, scale, format = 'A3', isLandscape = true } = req.body;
   let browser = null;
 
+  console.log(`[Railway] Menerima request. Ukuran HTML: ${(html.length / 1024 / 1024).toFixed(2)} MB`);
+
   try {
     browser = await puppeteer.launch({
       headless: "new",
-      protocolTimeout: 180000, // Beri waktu 3 menit untuk protokol internal
+      // Kurangi timeout agar tidak menggantung terlalu lama
+      protocolTimeout: 50000, 
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
+        '--disable-dev-shm-usage', // Sangat penting untuk mencegah OOM di Docker
         '--disable-gpu',
-        '--font-render-hinting=none'
+        '--font-render-hinting=none',
+        '--js-flags="--max-old-space-size=256"' // Batasi memori JS
       ]
     });
 
     const page = await browser.newPage();
     
-    // 1. Tunggu sampai semua aset (CSS, Font, Gambar) benar-benar termuat
+    // Matikan pemuatan gambar untuk menghemat memori (jika logo tidak terlalu penting)
+    // await page.setRequestInterception(true);
+    // page.on('request', (request) => {
+    //   if (request.resourceType() === 'image') request.abort();
+    //   else request.continue();
+    // });
+
     await page.setContent(html, { 
-      waitUntil: ['networkidle0', 'domcontentloaded'], 
-      timeout: 120000 
+      waitUntil: 'domcontentloaded', 
+      timeout: 45000 
     });
     
-    // 2. Pastikan font sudah siap
     await page.evaluateHandle('document.fonts.ready');
-    
-    // 3. Buffer ekstra untuk layouting tabel raksasa
-    await new Promise(r => setTimeout(r, 2000));
+    // Buffer 1 detik untuk layout
+    await new Promise(r => setTimeout(r, 1000));
 
     const pdfBuffer = await page.pdf({
       format: format,
@@ -54,9 +62,11 @@ app.post('/generate-pdf', async (req, res) => {
           Page <span class="pageNumber"></span> of <span class="totalPages"></span>
         </div>
       `,
-      timeout: 120000
+      timeout: 45000
     });
 
+    console.log(`[Railway] PDF Berhasil dibuat.`);
+    
     res.set({
       'Content-Type': 'application/pdf',
       'Content-Length': pdfBuffer.length
@@ -64,8 +74,8 @@ app.post('/generate-pdf', async (req, res) => {
     res.send(pdfBuffer);
 
   } catch (error) {
-    console.error('=== PDF ERROR ===');
-    console.error(error); // Log detail error ke Railway
+    console.error('=== RAILWAY PDF ERROR ===');
+    console.error(error);
     res.status(500).json({ error: error.message });
   } finally {
     if (browser) await browser.close();

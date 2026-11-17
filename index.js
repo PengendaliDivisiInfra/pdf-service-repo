@@ -1,6 +1,9 @@
 const express = require('express');
 const puppeteer = require('puppeteer');
 const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 
 const app = express();
 app.use(cors());
@@ -13,40 +16,37 @@ app.get('/healthz', (req, res) => {
 app.post('/generate-pdf', async (req, res) => {
   const { html, scale, format = 'A3', isLandscape = true } = req.body;
   let browser = null;
+  let tempFilePath = null;
 
-  console.log(`[Railway] Menerima request. Ukuran HTML: ${(html.length / 1024 / 1024).toFixed(2)} MB`);
+  // Buat nama file unik di folder temp OS
+  tempFilePath = path.join(os.tmpdir(), `pdf-${Date.now()}-${Math.random().toString(36).substring(7)}.html`);
 
   try {
+    // 1. Simpan HTML ke file temporer untuk mengurangi beban memori CDP
+    fs.writeFileSync(tempFilePath, html, 'utf-8');
+
     browser = await puppeteer.launch({
       headless: "new",
-      // Kurangi timeout agar tidak menggantung terlalu lama
-      protocolTimeout: 50000, 
+      protocolTimeout: 60000,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage', // Sangat penting untuk mencegah OOM di Docker
+        '--disable-dev-shm-usage',
         '--disable-gpu',
         '--font-render-hinting=none',
-        '--js-flags="--max-old-space-size=256"' // Batasi memori JS
+        '--js-flags="--max-old-space-size=256"' // Batasi heap V8 agar tidak OOM
       ]
     });
 
     const page = await browser.newPage();
     
-    // Matikan pemuatan gambar untuk menghemat memori (jika logo tidak terlalu penting)
-    // await page.setRequestInterception(true);
-    // page.on('request', (request) => {
-    //   if (request.resourceType() === 'image') request.abort();
-    //   else request.continue();
-    // });
-
-    await page.setContent(html, { 
-      waitUntil: 'domcontentloaded', 
-      timeout: 45000 
+    // 2. Buka file lokal via protokol file:// (jauh lebih ringan dari setContent)
+    await page.goto(`file://${tempFilePath}`, { 
+      waitUntil: 'networkidle0', 
+      timeout: 60000 
     });
     
     await page.evaluateHandle('document.fonts.ready');
-    // Buffer 1 detik untuk layout
     await new Promise(r => setTimeout(r, 1000));
 
     const pdfBuffer = await page.pdf({
@@ -62,7 +62,7 @@ app.post('/generate-pdf', async (req, res) => {
           Page <span class="pageNumber"></span> of <span class="totalPages"></span>
         </div>
       `,
-      timeout: 45000
+      timeout: 60000
     });
 
     console.log(`[Railway] PDF Berhasil dibuat.`);
@@ -78,7 +78,14 @@ app.post('/generate-pdf', async (req, res) => {
     console.error(error);
     res.status(500).json({ error: error.message });
   } finally {
-    if (browser) await browser.close();
+    // 3. Selalu hapus file temporer
+    if (tempFilePath && fs.existsSync(tempFilePath)) {
+      try { fs.unlinkSync(tempFilePath); } catch (e) { console.error('Gagal hapus temp file:', e); }
+    }
+    // 4. Tutup browser dengan aman (try-catch agar tidak crash jika browser sudah mati)
+    if (browser) {
+      try { await browser.close(); } catch (e) { console.error('Gagal tutup browser:', e); }
+    }
   }
 });
 

@@ -14,7 +14,7 @@ app.get('/healthz', (req, res) => {
 });
 
 app.post('/generate-pdf', async (req, res) => {
-  const { html, scale, format = 'A3', isLandscape = true } = req.body;
+  const { html, scale, format = 'A3', isLandscape = true, footerTemplate } = req.body;
   let browser = null;
   let tempFilePath = null;
 
@@ -27,14 +27,14 @@ app.post('/generate-pdf', async (req, res) => {
 
     browser = await puppeteer.launch({
       headless: "new",
-      protocolTimeout: 60000,
+      protocolTimeout: 120000, // Naikkan timeout protocol
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
         '--font-render-hinting=none',
-        '--js-flags="--max-old-space-size=256"' // Batasi heap V8 agar tidak OOM
+        '--js-flags="--max-old-space-size=512"' // Naikkan heap memory
       ]
     });
 
@@ -55,13 +55,9 @@ app.post('/generate-pdf', async (req, res) => {
       printBackground: true,
       scale: scale || 1,
       margin: { top: '10mm', right: '10mm', bottom: '15mm', left: '10mm' },
-      displayHeaderFooter: true,
+      displayHeaderFooter: !!footerTemplate,
       headerTemplate: '<div></div>',
-      footerTemplate: `
-        <div style="width: 100%; font-size: 9px; font-family: 'Segoe UI', Arial, sans-serif; color: #64748b; text-align: right; padding-right: 10mm;">
-          Page <span class="pageNumber"></span> of <span class="totalPages"></span>
-        </div>
-      `,
+      footerTemplate: footerTemplate || '', // Gunakan dari Vercel, atau kosongkan
       timeout: 60000
     });
 
@@ -82,7 +78,7 @@ app.post('/generate-pdf', async (req, res) => {
     if (tempFilePath && fs.existsSync(tempFilePath)) {
       try { fs.unlinkSync(tempFilePath); } catch (e) { console.error('Gagal hapus temp file:', e); }
     }
-    // 4. Tutup browser dengan aman (try-catch agar tidak crash jika browser sudah mati)
+    // 4. Tutup browser dengan aman
     if (browser) {
       try { await browser.close(); } catch (e) { console.error('Gagal tutup browser:', e); }
     }
